@@ -1,0 +1,5 @@
+# Direct dependencies. Edit this file, then regenerate requirements.txt:
+#   uv pip compile --universal --python-version 3.13 --generate-hashes requirements.in -o requirements.txt
+slack-bolt>=1.15,<2
+notion-client>=1,<2
+python-dotenv
