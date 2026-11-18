@@ -1,9 +1,12 @@
+import json
 import logging
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
 from notion_client import APIResponseError, RequestTimeoutError
+from slack_sdk.models.basic_objects import JsonObject
+from slack_sdk.models.views import View
 
 from app.notion_ops import (
     MAX_OPTIONS,
@@ -12,6 +15,7 @@ from app.notion_ops import (
     UNTITLED,
     build_input_blocks,
     build_notion_database_options,
+    build_property_options,
     parse_number,
     send_to_notion,
     to_page_properties,
@@ -293,3 +297,141 @@ def test_send_to_notion_uses_data_source_parent():
 
     kwargs = notion.pages.create.call_args.kwargs
     assert kwargs["parent"] == {"type": "data_source_id", "data_source_id": "ds-1"}
+
+
+#
+# Slack limits for the input form
+#
+
+
+def _assert_valid_slack_view(blocks):
+    """Validate the blocks with the Slack SDK models, which hold the Block Kit limits."""
+    view = View(type="modal", title="Send to Notion", blocks=blocks)
+
+    def walk(obj):
+        if isinstance(obj, JsonObject):
+            obj.validate_json()
+            for value in vars(obj).values():
+                walk(value)
+        elif isinstance(obj, (list, tuple)):
+            for item in obj:
+                walk(item)
+
+    walk(view)
+
+
+def _data_source(**properties):
+    return {"object": "data_source", "id": "ds-1", "title": [{"plain_text": "Tasks"}], "properties": properties}
+
+
+def _select(prop_type, count, name_length=10):
+    options = [{"id": f"opt-{i}", "name": f"{i}".ljust(name_length, "x")} for i in range(count)]
+    return {"id": f"{prop_type}-id", "type": prop_type, prop_type: {"options": options}}
+
+
+def test_input_blocks_shorten_long_option_names():
+    data_source = _data_source(Name={"id": "title", "type": "title"}, Status=_select("select", 3, name_length=100))
+
+    blocks = build_input_blocks(data_source)
+
+    _assert_valid_slack_view(blocks)
+    texts = [o["text"]["text"] for o in blocks[2]["element"]["options"]]
+    assert all(len(t) <= 75 for t in texts)
+    assert all(t.endswith("…") for t in texts)
+
+
+@pytest.mark.parametrize(
+    "prop_type, element_type", [("select", "external_select"), ("multi_select", "multi_external_select")]
+)
+def test_input_blocks_use_external_select_above_100_options(prop_type, element_type):
+    data_source = _data_source(Name={"id": "title", "type": "title"}, Tags=_select(prop_type, 150))
+
+    blocks = build_input_blocks(data_source)
+
+    _assert_valid_slack_view(blocks)
+    element = blocks[2]["element"]
+    assert element["type"] == element_type
+    # to_page_properties reads the property type from the action ID.
+    assert element["action_id"] == prop_type
+
+
+@pytest.mark.parametrize("prop_type", ["select", "multi_select"])
+def test_input_blocks_keep_static_select_up_to_100_options(prop_type):
+    data_source = _data_source(Name={"id": "title", "type": "title"}, Tags=_select(prop_type, 100))
+
+    blocks = build_input_blocks(data_source)
+
+    _assert_valid_slack_view(blocks)
+    assert len(blocks[2]["element"]["options"]) == 100
+
+
+def test_property_options_filter_and_respect_slack_limits():
+    data_source = _data_source(Name={"id": "title", "type": "title"}, Tags=_select("multi_select", 300, name_length=100))
+
+    all_options = build_property_options(data_source, "multi_select-id", "")
+    some_options = build_property_options(data_source, "multi_select-id", "25")
+
+    assert len(all_options) == 100
+    assert all(len(o["text"]["text"]) <= 75 for o in all_options)
+    assert [o["value"] for o in some_options] == [f"opt-{i}" for i in range(300) if "25" in str(i)]
+
+
+def test_property_options_match_without_case():
+    data_source = _data_source(Status={"id": "s", "type": "select", "select": {"options": [{"id": "a", "name": "Done"}]}})
+    assert [o["value"] for o in build_property_options(data_source, "s", "dONE")] == ["a"]
+
+
+def test_property_options_for_unknown_property_are_empty():
+    data_source = _data_source(Name={"id": "title", "type": "title"})
+    assert build_property_options(data_source, "missing", "") == []
+
+
+def test_input_blocks_respect_the_modal_block_limit():
+    properties = {"Name": {"id": "title", "type": "title"}}
+    properties.update({f"Field {i}": {"id": f"p{i}", "type": "number"} for i in range(150)})
+
+    blocks = build_input_blocks(_data_source(**properties))
+
+    _assert_valid_slack_view(blocks)
+    assert len(blocks) == 100
+    assert blocks[1]["block_id"] == "title"
+    # 97 properties are shown. The last block tells the user that 53 properties are not shown.
+    assert sum(1 for b in blocks if b.get("element", {}).get("action_id") == "number") == 97
+    assert "53 properties are not shown" in json.dumps(blocks[-1])
+
+
+def test_text_inputs_accept_at_most_the_notion_text_limit():
+    data_source = _data_source(Name={"id": "title", "type": "title"}, Notes={"id": "n", "type": "rich_text"})
+
+    blocks = build_input_blocks(data_source)
+
+    assert blocks[1]["element"]["max_length"] == 2000
+    assert blocks[2]["element"]["max_length"] == 2000
+
+
+def test_database_name_is_plain_text_and_shortened():
+    data_source = _data_source(Name={"id": "title", "type": "title"})
+    data_source["title"] = [{"plain_text": "<!channel> *bold* & a very long database name"}]
+
+    header = build_input_blocks(data_source)[0]["text"]
+
+    assert header["type"] == "plain_text"
+    assert header["text"].endswith('"<!channel> *bold* & a v…"')
+
+
+def test_checkbox_option_has_visible_text():
+    data_source = _data_source(Name={"id": "title", "type": "title"}, Done={"id": "d", "type": "checkbox"})
+
+    option = build_input_blocks(data_source)[2]["element"]["options"][0]
+
+    assert option["text"]["text"].strip() != ""
+
+
+@pytest.mark.parametrize("url", ["httpfoo", "http://", "ftp://example.com", "https//example.com"])
+def test_validate_submission_rejects_invalid_urls(url):
+    assert "u" in validate_submission({"u": {"url": {"value": url}}})
+
+
+@pytest.mark.parametrize("url", ["https://example.com", "http://example.com/a?b=c"])
+def test_validate_submission_accepts_http_urls(url):
+    assert validate_submission({"u": {"url": {"value": url}}}) == {}
