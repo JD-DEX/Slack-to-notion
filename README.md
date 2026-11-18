@@ -6,14 +6,9 @@ The benefits of this light-weight version are:
 * You can take full control of the app, from data management to code customization
 * You can customize any of the metadata of the app such as its name, icon, and description
 
-As this is a bit simpler implementation than the hosted one, there are a few limitations:
 * You have to set up both Slack and Notion integrations on your own
 * This app connects a pair of a single Slack Org/Workspace and a single Notion Workspace
 * This app is supposed to be installed once by your Notion Workspace admin
-
-### This app is free! but your support would be appreciated ❤️
-
-Anyone can use and modify this app under the MIT license, but [buying me a coffee](https://www.buymeacoffee.com/seratchoss) would be greatly appreciated!
 
 ## Steps to configure this app
 
