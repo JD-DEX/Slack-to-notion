@@ -5,10 +5,11 @@ import os
 from slack_bolt import App, Ack, Say, BoltContext
 from slack_sdk import WebClient
 
-from notion_client import APIResponseError, Client
+from notion_client import APIResponseError
 
 from app.notion_ops import (
-    find_notion_database,
+    find_notion_data_source,
+    new_notion_client,
     build_notion_database_options,
     build_input_blocks,
     send_to_notion,
@@ -141,7 +142,7 @@ def register_slack_event_handlers(app: App):
     @app.options("search-notion-database")
     def search_notion_database(ack: Ack, payload: dict, context: BoltContext, logger: logging.Logger):
         try:
-            notion = Client(auth=resolve_notion_token(context))
+            notion = new_notion_client(resolve_notion_token(context))
             options = build_notion_database_options(notion, payload)
         except Exception as e:
             log_failure(logger, "Searching Notion databases failed", e)
@@ -177,10 +178,10 @@ def register_slack_event_handlers(app: App):
     ):
         try:
             block_key = "search-notion-database"
-            database_id = view["state"]["values"][block_key][block_key]["selected_option"]["value"]
-            notion = Client(auth=resolve_notion_token(context))
-            database = find_notion_database(notion, database_id)
-            blocks = build_input_blocks(database)
+            data_source_id = view["state"]["values"][block_key][block_key]["selected_option"]["value"]
+            notion = new_notion_client(resolve_notion_token(context))
+            data_source = find_notion_data_source(notion, data_source_id)
+            blocks = build_input_blocks(data_source)
             client.views_update(
                 view_id=view["id"],
                 view={
@@ -189,7 +190,7 @@ def register_slack_event_handlers(app: App):
                     "title": {"type": "plain_text", "text": "Send to Notion"},
                     "submit": {"type": "plain_text", "text": "Submit"},
                     "close": {"type": "plain_text", "text": "Close"},
-                    "private_metadata": json.dumps({"notion_database_id": database_id}),
+                    "private_metadata": json.dumps({"notion_data_source_id": data_source_id}),
                     "blocks": blocks,
                 },
             )
@@ -260,9 +261,9 @@ def register_slack_event_handlers(app: App):
         if len(errors) > 0:
             return
         try:
-            database_id = json.loads(view["private_metadata"])["notion_database_id"]
-            notion = Client(auth=resolve_notion_token(context))
-            new_page = send_to_notion(notion, database_id, view["state"]["values"])
+            data_source_id = json.loads(view["private_metadata"])["notion_data_source_id"]
+            notion = new_notion_client(resolve_notion_token(context))
+            new_page = send_to_notion(notion, data_source_id, view["state"]["values"])
             page_url = new_page["url"]
             client.views_update(
                 view_id=view["id"],

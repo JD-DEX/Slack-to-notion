@@ -1,5 +1,6 @@
 # Direct dependencies. Edit this file, then regenerate requirements.txt:
 #   uv pip compile --universal --python-version 3.13 --generate-hashes requirements.in -o requirements.txt
 slack-bolt>=1.15,<2
-notion-client>=1,<2
+# 3.x supports Notion API 2025-09-03 (data sources). The app sets the version explicitly.
+notion-client>=3.1,<4
 python-dotenv

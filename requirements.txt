@@ -29,9 +29,9 @@ idna==3.20 \
     # via
     #   anyio
     #   httpx
-notion-client==1.0.0 \
-    --hash=sha256:01b3dfba071b5d09b6bdef2950624b7f000da2ece851c133ccf40815c4db167b \
-    --hash=sha256:281b37a1512abeccb81377d4a3461833f1c1fbd0ceb6e681e38b7cd446bf1bce
+notion-client==3.1.0 \
+    --hash=sha256:516e31326f855ec34559289b57be4e27ad656062f51f594c8f4ee3a608ee333d \
+    --hash=sha256:7e3935f4dbc11231d8ad1fe404112e278501520342eaa35f86456f0df44a8aca
     # via -r requirements.in
 python-dotenv==1.2.4 \
     --hash=sha256:42269a8a5b3fd54ffa6f3d84b18abed50064717576b4ecf03dc4a55d8aa04fdc \

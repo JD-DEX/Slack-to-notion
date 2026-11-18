@@ -4,6 +4,10 @@ from typing import Any, Dict, List, Optional, Union
 
 from notion_client import Client
 
+# Notion API version 2025-09-03 splits databases into data sources.
+# Set it explicitly so that an SDK upgrade cannot change the API version without a code change.
+NOTION_API_VERSION = "2025-09-03"
+
 UNTITLED = "Untitled"
 # Slack limits: an options response has at most 100 options, and option text has at most 75 characters.
 MAX_OPTIONS = 100
@@ -55,14 +59,24 @@ def validate_submission(state_values: dict) -> Dict[str, str]:
     return errors
 
 
-def find_notion_database(notion: Client, database_id: str) -> dict:
-    return notion.databases.retrieve(database_id=database_id)
+def new_notion_client(token: str) -> Client:
+    return Client(auth=token, notion_version=NOTION_API_VERSION)
+
+
+def find_notion_data_source(notion: Client, data_source_id: str) -> dict:
+    """Return the data source, which holds the title and the property schema."""
+    return notion.data_sources.retrieve(data_source_id=data_source_id)
 
 
 def build_notion_database_options(notion: Client, payload: dict) -> List[Dict[str, Any]]:
+    """Search for data sources. Each option value is a data source ID.
+
+    A database with more than one data source returns one search result per data source,
+    so the user picks the exact data source to write to.
+    """
     databases = []
     query = payload.get("value")
-    database_filter = {"property": "object", "value": "database"}
+    database_filter = {"property": "object", "value": "data_source"}
     cursor = None
     # Slack shows at most 100 options, so stop after 100 results.
     # This also keeps the request inside Slack's 3-second limit.
@@ -238,9 +252,9 @@ def to_page_properties(state_values: dict) -> dict:
     return properties
 
 
-def send_to_notion(notion: Client, database_id: str, state_values: dict):
+def send_to_notion(notion: Client, data_source_id: str, state_values: dict):
     new_page = notion.pages.create(
-        parent={"type": "database_id", "database_id": database_id},
+        parent={"type": "data_source_id", "data_source_id": data_source_id},
         properties=to_page_properties(state_values),
     )
     return new_page
