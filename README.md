@@ -145,7 +145,8 @@ python -m pytest
 
 ### Container image on GHCR
 
-The workflow in `.github/workflows/docker-image.yml` publishes an image to GHCR on each push to `main`.
+The workflow in `.github/workflows/docker-image.yml` runs the tests first. It publishes an image to GHCR on each push to `main` only when the tests pass.
+On pull requests, it runs the tests and builds the image, but does not publish it.
 Set that GHCR package to **private** in its package settings.
 
 ### Notion API version and data sources

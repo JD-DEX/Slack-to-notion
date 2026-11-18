@@ -1,4 +1,5 @@
-# Builds the image and publishes it to GitHub Container Registry (GHCR).
+# Runs the tests, then builds the image and publishes it to GitHub Container Registry (GHCR).
+# Pull requests run the tests and build the image, but do not publish it.
 #
 # IMPORTANT: the published GHCR package must be set to PRIVATE.
 # After the first run, open the package settings on GitHub
@@ -9,11 +10,29 @@ name: Create and publish a Docker image
 on:
   push:
     branches: ['main']
+  pull_request:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install locked dependencies
+        run: pip install --require-hashes -r requirements-dev.txt
+      - name: Run the tests
+        run: python -m pytest
   build-and-push-image:
+    # The image is published only when the tests pass.
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -22,6 +41,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
       - name: Log in to the Container registry
+        if: github.event_name == 'push'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -36,6 +56,6 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          push: true
+          push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
