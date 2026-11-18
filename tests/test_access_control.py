@@ -6,11 +6,12 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from slack_bolt import App, BoltRequest
+from slack_bolt import BoltRequest
 from slack_bolt.authorization import AuthorizeResult
 
 from app.access_control import DENIED_MESSAGE, build_allowlist_middleware, parse_allowed_user_ids
-from app.slack_events import register_slack_event_handlers
+from app.notion_ops import NotionClients
+from main import build_app
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ALLOWED_USER = "UALLOWED1"
@@ -23,23 +24,22 @@ def _authorize(**kwargs):
 
 
 @pytest.fixture
-def app():
+def notion():
+    return mock.MagicMock()
+
+
+@pytest.fixture
+def app(notion):
+    # Use the production wiring from main.py. Only the Slack authorization is replaced.
     # process_before_response=True runs listeners in the request thread, so the tests are deterministic.
-    app = App(
+    return build_app(
+        frozenset({ALLOWED_USER}),
+        NotionClients(search=notion.search_client, default=notion.default_client),
         signing_secret="test",
         authorize=_authorize,
         request_verification_enabled=False,
         process_before_response=True,
     )
-    app.use(build_allowlist_middleware(frozenset({ALLOWED_USER})))
-
-    @app.middleware
-    def attach_notion_token(context, next):
-        context["notion_token"] = "test-notion-token"
-        next()
-
-    register_slack_event_handlers(app)
-    return app
 
 
 @pytest.fixture
@@ -147,17 +147,37 @@ def _run_main(env):
     )
 
 
+ALL_TOKENS = {"SLACK_BOT_TOKEN": "x", "SLACK_APP_TOKEN": "x", "NOTION_API_TOKEN": "x"}
+
+
 def test_main_exits_when_allowlist_is_empty():
-    result = _run_main({"ALLOWED_SLACK_USER_IDS": "", "SLACK_BOT_TOKEN": "x", "SLACK_APP_TOKEN": "x"})
+    result = _run_main({**ALL_TOKENS, "ALLOWED_SLACK_USER_IDS": ""})
     assert result.returncode == 1
     assert "ALLOWED_SLACK_USER_IDS" in result.stderr
 
 
 @pytest.mark.skipif((PROJECT_ROOT / ".env").exists(), reason="a local .env file could set the variable")
 def test_main_exits_when_allowlist_is_unset():
-    result = _run_main({"SLACK_BOT_TOKEN": "x", "SLACK_APP_TOKEN": "x"})
+    result = _run_main(ALL_TOKENS)
     assert result.returncode == 1
     assert "ALLOWED_SLACK_USER_IDS" in result.stderr
+
+
+@pytest.mark.skipif((PROJECT_ROOT / ".env").exists(), reason="a local .env file could set the variable")
+@pytest.mark.parametrize("missing", ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "NOTION_API_TOKEN"])
+def test_main_exits_when_a_token_is_unset(missing):
+    env = {**ALL_TOKENS, "ALLOWED_SLACK_USER_IDS": "U1"}
+    del env[missing]
+    result = _run_main(env)
+    assert result.returncode == 1
+    assert missing in result.stderr
+
+
+@pytest.mark.skipif((PROJECT_ROOT / ".env").exists(), reason="a local .env file could set the variable")
+def test_main_exits_when_a_token_is_blank():
+    result = _run_main({**ALL_TOKENS, "ALLOWED_SLACK_USER_IDS": "U1", "NOTION_API_TOKEN": "  "})
+    assert result.returncode == 1
+    assert "NOTION_API_TOKEN" in result.stderr
 
 
 #
@@ -196,7 +216,9 @@ def test_denied_options_get_empty_list(app, slack_api):
     build_options.assert_not_called()
 
 
-@pytest.mark.parametrize("payload, block_id", [(select_view_submission, "search-notion-database"), (send_view_submission, "title")])
+@pytest.mark.parametrize(
+    "payload, block_id", [(select_view_submission, "search-notion-database"), (send_view_submission, "title")]
+)
 def test_denied_view_submission_gets_errors(app, slack_api, payload, block_id):
     with mock.patch("app.slack_events.send_to_notion") as send:
         resp = dispatch(app, payload(DENIED_USER))
@@ -231,13 +253,12 @@ def test_allowed_command_opens_form(app, slack_api):
     assert view["callback_id"] == "select-notion-database"
 
 
-def test_allowed_options_reach_the_handler(app, slack_api):
+def test_allowed_options_reach_the_handler(app, slack_api, notion):
     fake_options = [{"text": {"type": "plain_text", "text": "Tasks"}, "value": "ds-1"}]
-    with mock.patch("app.slack_events.build_notion_database_options", return_value=fake_options), mock.patch(
-        "app.slack_events.new_notion_client"
-    ):
+    with mock.patch("app.slack_events.build_notion_database_options", return_value=fake_options) as build_options:
         resp = dispatch(app, options(ALLOWED_USER))
     assert json.loads(resp.body) == {"options": fake_options}
+    assert build_options.call_args.args[0] is notion.search_client
 
 
 def test_allowed_home_opened_publishes_home_tab(app, slack_api):

@@ -122,7 +122,7 @@ The app uses Socket Mode. It opens an outbound WebSocket connection to Slack and
 4. In **Settings**, keep **Serverless** (formerly "App Sleeping") off. Slack cannot wake a sleeping Socket Mode app, so a sleeping service misses all requests.
 5. Deploy. The logs show `Bolt app is running!` when the app is connected.
 
-If `ALLOWED_SLACK_USER_IDS` is missing, the deploy fails at startup with a clear error. This is intentional.
+If a token or `ALLOWED_SLACK_USER_IDS` is missing, the deploy fails at startup with a clear error that names the missing variables. This is intentional.
 
 ### Update dependencies
 

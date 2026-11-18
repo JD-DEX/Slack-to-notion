@@ -1,11 +1,14 @@
+import logging
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
+from notion_client import APIResponseError, RequestTimeoutError
 
 from app.notion_ops import (
     MAX_OPTIONS,
     NOTION_API_VERSION,
-    new_notion_client,
+    new_notion_clients,
     UNTITLED,
     build_input_blocks,
     build_notion_database_options,
@@ -166,10 +169,88 @@ def test_options_skip_trashed_data_sources():
     assert [o["value"] for o in options] == ["ds-live"]
 
 
-def test_client_sends_latest_notion_version():
-    notion = new_notion_client("test-notion-token")
+def _transport(status, body, calls):
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status, json=body)
+
+    return httpx.MockTransport(handler)
+
+
+def _with_transport(notion, transport):
+    # The client setter copies the base URL, timeout and headers from the client options.
+    notion.client = httpx.Client(transport=transport)
+    return notion
+
+
+def test_clients_send_latest_notion_version():
+    clients = new_notion_clients("test-notion-token")
     assert NOTION_API_VERSION == "2026-03-11"
-    assert notion.client.headers["Notion-Version"] == "2026-03-11"
+    assert clients.search.client.headers["Notion-Version"] == "2026-03-11"
+    assert clients.default.client.headers["Notion-Version"] == "2026-03-11"
+
+
+def test_making_clients_does_not_add_log_handlers():
+    sdk_logger = logging.getLogger("notion_client")
+    before = len(sdk_logger.handlers)
+    for _ in range(5):
+        new_notion_clients("test-notion-token")
+    assert len(sdk_logger.handlers) == before
+
+
+def test_notion_failures_do_not_log_form_values(caplog):
+    secret = "secret-user-input"
+    body = {"object": "error", "status": 400, "code": "validation_error", "message": f"instead was `{secret}`"}
+    notion = _with_transport(new_notion_clients("t").default, _transport(400, body, []))
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(APIResponseError):
+            notion.pages.create(parent={"data_source_id": "ds-1"}, properties={})
+
+    assert secret not in caplog.text
+
+
+def test_search_client_does_not_retry_rate_limits():
+    calls = []
+    body = {"object": "error", "status": 429, "code": "rate_limited", "message": "slow down"}
+    notion = _with_transport(new_notion_clients("t").search, _transport(429, body, calls))
+
+    with pytest.raises(APIResponseError):
+        notion.search(query="", filter={"property": "object", "value": "data_source"})
+
+    assert len(calls) == 1
+
+
+def test_search_client_times_out_inside_the_slack_limit():
+    def slow(request):
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    notion = _with_transport(new_notion_clients("t").search, httpx.MockTransport(slow))
+
+    with pytest.raises(RequestTimeoutError):
+        notion.search(query="")
+    # Slack waits 3 seconds for an options response.
+    assert notion.client.timeout.read is not None and notion.client.timeout.read < 3
+
+
+def test_default_client_limits_retry_delay(monkeypatch):
+    calls = []
+    delays = []
+    monkeypatch.setattr("notion_client.client.time.sleep", delays.append)
+    body = {"object": "error", "status": 429, "code": "rate_limited", "message": "slow down"}
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, json=body, headers={"retry-after": "60"})
+
+    notion = _with_transport(new_notion_clients("t").default, httpx.MockTransport(handler))
+
+    with pytest.raises(APIResponseError):
+        notion.pages.create(parent={"data_source_id": "ds-1"}, properties={})
+
+    assert len(calls) == 3
+    # The server asks for 60 seconds. The client waits at most 5 seconds for each retry.
+    assert delays and max(delays) <= 5
 
 
 def test_options_respect_slack_limits():
