@@ -1,10 +1,13 @@
 """Integration tests for the modal flows, from the Slack request to the Slack and Notion calls."""
 
 import json
+import logging
+from unittest import mock
 
 import pytest
 from slack_sdk.errors import SlackApiError
 
+from app.slack_events import show_result
 from tests.helpers import ALLOWED_USER, _team, dispatch, send_view_submission
 
 
@@ -155,3 +158,13 @@ def test_unused_actions_have_no_handler(app, slack_api, action_id):
         "actions": [{"action_id": action_id, "type": "button", "block_id": "b"}],
     }
     assert dispatch(app, body).status == 404
+
+
+def test_show_result_without_user_id_logs_and_does_not_raise(caplog):
+    client = mock.MagicMock()
+    client.views_update.side_effect = SlackApiError("not_found", {"ok": False})
+
+    show_result(client, "V1", None, "text", logging.getLogger("test"))
+
+    client.chat_postMessage.assert_not_called()
+    assert "no user ID" in caplog.text

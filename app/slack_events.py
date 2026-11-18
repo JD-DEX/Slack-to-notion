@@ -63,6 +63,9 @@ def show_result(client: WebClient, view_id: str, user_id: Optional[str], text: s
         return
     except Exception as e:
         logger.warning("Could not show the result in the modal (%s). Sending a DM.", type(e).__name__)
+    if not user_id:
+        logger.error("Could not tell the user the result (no user ID)")
+        return
     try:
         client.chat_postMessage(channel=user_id, text=text)
     except Exception as e:
