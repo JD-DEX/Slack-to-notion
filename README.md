@@ -85,48 +85,62 @@ On the Notion side, all you need to do are to create a new integration and share
 
 ### Deploy this app to somewhere you manage
 
-If you want to use the pre-built Docker image, you can pull it this way:
+Build the image from this fork. Do not use the upstream pre-built image
+(`ghcr.io/seratch/send-to-notion-in-slack-oss`): it does not have the access control and the other fixes in this fork.
 
-```bash
-docker pull ghcr.io/seratch/send-to-notion-in-slack-oss:main
-```
+#### Environment variables
 
-If you want to run the app locally, the following steps should work for you.
+| Variable | Required | Description |
+|-|-|-|
+| `SLACK_BOT_TOKEN` | Yes | Bot User OAuth Token (`xoxb-...`) |
+| `SLACK_APP_TOKEN` | Yes | App-level token with `connections:write` (`xapp-...`) |
+| `NOTION_API_TOKEN` | Yes | Notion internal integration token |
+| `ALLOWED_SLACK_USER_IDS` | Yes | Comma-separated Slack user IDs that can use the app. The app does not start if this is empty. |
+| `LOG_LEVEL` | No | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. Default: `INFO`. |
 
-```bash
-export SLACK_APP_TOKEN=xapp-...
-export SLACK_BOT_TOKEN=xoxb-...
-export NOTION_API_TOKEN=secret_...
-docker run \
-  --platform linux/amd64 \
-  -e SLACK_APP_TOKEN=$SLACK_APP_TOKEN \
-  -e SLACK_BOT_TOKEN=$SLACK_BOT_TOKEN \
-  -e NOTION_API_TOKEN=$NOTION_API_TOKEN \
-  -it ghcr.io/seratch/send-to-notion-in-slack-oss:main
-```
+Copy `.env.example` to `.env` for local runs. `.env` files are ignored by git and by Docker. Never commit them.
 
-Please read https://github.com/seratch/send-to-notion-in-slack-oss/pkgs/container/send-to-notion-in-slack-oss for more details.
+To find a Slack user ID, open the user's profile in Slack, click the "more" menu and select "Copy member ID".
 
 #### Build a Docker image using the Dockerfile
 
-You can build a new image by running the following command:
-
 ```bash
-docker build . -t your-repo/send-to-notion
+docker build . -t send-to-notion
 ```
+
+The image runs as a non-root user (UID 10001) and installs only hash-checked dependencies from `requirements.txt`.
 
 #### Spin up a new running app with the image
 
-If you want to run the app locally, the following steps should work for you.
-
 ```bash
-export SLACK_APP_TOKEN=xapp-...
-export SLACK_BOT_TOKEN=xoxb-...
-export NOTION_API_TOKEN=secret_...
-docker run -e SLACK_APP_TOKEN=$SLACK_APP_TOKEN -e SLACK_BOT_TOKEN=$SLACK_BOT_TOKEN -e NOTION_API_TOKEN=$NOTION_API_TOKEN -it your-repo/send-to-notion
+cp .env.example .env   # then edit .env and set real values
+docker run --env-file .env send-to-notion
 ```
 
-You can set up your production infra to do the same for deployments.
+The app uses Socket Mode. It opens an outbound WebSocket connection to Slack and does not need an open port.
+
+### Deploy on Railway
+
+1. Create a new service from this repository. Railway finds the `Dockerfile` in the repository root and builds the image from it.
+2. In the service **Variables** tab, set `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `NOTION_API_TOKEN`, `ALLOWED_SLACK_USER_IDS` and `LOG_LEVEL` (use `INFO`).
+3. In **Settings > Networking**, do not generate a public domain. The app is a worker. It has no HTTP server.
+4. In **Settings**, keep **Serverless** (formerly "App Sleeping") off. Slack cannot wake a sleeping Socket Mode app, so a sleeping service misses all requests.
+5. Deploy. The logs show `Bolt app is running!` when the app is connected.
+
+If `ALLOWED_SLACK_USER_IDS` is missing, the deploy fails at startup with a clear error. This is intentional.
+
+### Update dependencies
+
+Edit `requirements.in`, then regenerate the hashed lockfile:
+
+```bash
+uv pip compile --universal --python-version 3.13 --generate-hashes requirements.in -o requirements.txt
+```
+
+### Container image on GHCR
+
+The workflow in `.github/workflows/docker-image.yml` publishes an image to GHCR on each push to `main`.
+Set that GHCR package to **private** in its package settings.
 
 ## How to run the app
 

@@ -1,3 +1,10 @@
+# Builds the image and publishes it to GitHub Container Registry (GHCR).
+#
+# IMPORTANT: the published GHCR package must be set to PRIVATE.
+# After the first run, open the package settings on GitHub
+# (Packages > <package> > Package settings > Danger Zone > Change visibility)
+# and set the visibility to Private. A public image exposes the app code
+# and its dependency versions to anyone.
 name: Create and publish a Docker image
 on:
   push:
@@ -13,20 +20,20 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
       - name: Log in to the Container registry
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v4
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
       - name: Build and push Docker image
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
