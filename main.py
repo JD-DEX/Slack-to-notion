@@ -5,6 +5,7 @@ from typing import Callable
 from slack_bolt import App, BoltContext
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
+from app.access_control import ALLOWED_USERS_ENV_VAR, build_allowlist_middleware, parse_allowed_user_ids
 from app.slack_events import register_slack_event_handlers
 from dotenv import load_dotenv
 
@@ -29,7 +30,18 @@ slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
 slack_app_level_token = os.environ.get("SLACK_APP_TOKEN")
 notion_api_token = os.environ.get("NOTION_API_TOKEN")
 
+# Fail closed: refuse to start without an allowlist.
+allowed_user_ids = parse_allowed_user_ids(os.environ.get(ALLOWED_USERS_ENV_VAR))
+if not allowed_user_ids:
+    sys.exit(
+        f"Startup failed: {ALLOWED_USERS_ENV_VAR} is empty or not set. "
+        "Set it to a comma-separated list of Slack user IDs (for example U01234ABCDE,U05678FGHIJ)."
+    )
+
 app = App(token=slack_bot_token)
+
+# Register the allowlist first so that it runs before all other middleware and listeners.
+app.use(build_allowlist_middleware(allowed_user_ids))
 
 
 @app.middleware
