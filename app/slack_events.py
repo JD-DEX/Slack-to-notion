@@ -16,11 +16,6 @@ from app.notion_ops import (
 
 
 def register_slack_event_handlers(app: App):
-    @app.middleware
-    def dump(body: dict, logger: logging.Logger, next_):
-        logger.debug(body)
-        next_()
-
     #
     # Home tab
     #
