@@ -5,7 +5,7 @@ import os
 from slack_bolt import App, Ack, Say, BoltContext
 from slack_sdk import WebClient
 
-from notion_client import Client
+from notion_client import APIResponseError, Client
 
 from app.notion_ops import (
     find_notion_database,
@@ -13,6 +13,27 @@ from app.notion_ops import (
     build_input_blocks,
     send_to_notion,
 )
+
+
+GENERIC_ERROR_TEXT = "Sorry, something went wrong. Please try again later or contact the app's administrator."
+
+
+def log_failure(logger: logging.Logger, message: str, e: Exception) -> None:
+    """Log a failure without user form values.
+
+    Notion validation messages can repeat the submitted values, so for Notion API
+    errors log only the HTTP status, error code and request ID.
+    """
+    if isinstance(e, APIResponseError):
+        logger.error(
+            "%s: Notion API error (status: %s, code: %s, request_id: %s)",
+            message,
+            getattr(e, "status", None),
+            getattr(e, "code", None),
+            getattr(e, "request_id", None),
+        )
+    else:
+        logger.exception(message)
 
 
 def register_slack_event_handlers(app: App):
@@ -117,9 +138,13 @@ def register_slack_event_handlers(app: App):
         )
 
     @app.options("search-notion-database")
-    def search_notion_database(ack: Ack, payload: dict, context: BoltContext):
-        notion = Client(auth=resolve_notion_token(context))
-        options = build_notion_database_options(notion, payload)
+    def search_notion_database(ack: Ack, payload: dict, context: BoltContext, logger: logging.Logger):
+        try:
+            notion = Client(auth=resolve_notion_token(context))
+            options = build_notion_database_options(notion, payload)
+        except Exception as e:
+            log_failure(logger, "Searching Notion databases failed", e)
+            options = []
         ack(options=options)
 
     def select_notion_database_ack(ack: Ack):
@@ -168,7 +193,7 @@ def register_slack_event_handlers(app: App):
                 },
             )
         except Exception as e:
-            logger.exception(e)
+            log_failure(logger, "Loading the Notion database failed", e)
             client.views_update(
                 view_id=view["id"],
                 view={
@@ -181,8 +206,7 @@ def register_slack_event_handlers(app: App):
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": ":x: Loading Notion database data failed for some reason. "
-                                "Please contact this app's user support email address :bow:",
+                                "text": f":x: Loading the Notion database failed. {GENERIC_ERROR_TEXT}",
                             },
                         }
                     ],
@@ -190,8 +214,7 @@ def register_slack_event_handlers(app: App):
             )
             say(
                 channel=context.user_id,
-                text=f"I'm sorry for being distracted! This app encountered a problem (error: {e})\n"
-                "Please contact this app's user support email address :bow:",
+                text=f":x: Loading the Notion database failed. {GENERIC_ERROR_TEXT}",
             )
 
     app.view("select-notion-database")(
@@ -273,7 +296,7 @@ def register_slack_event_handlers(app: App):
                 },
             )
         except Exception as e:
-            logger.exception(e)
+            log_failure(logger, "Saving the data to Notion failed", e)
             client.views_update(
                 view_id=view["id"],
                 view={
@@ -286,8 +309,7 @@ def register_slack_event_handlers(app: App):
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": ":x: Saving your data failed for some reason. "
-                                "Please contact this app's user support email address :bow:",
+                                "text": f":x: Saving your data failed. {GENERIC_ERROR_TEXT}",
                             },
                         }
                     ],
@@ -295,8 +317,7 @@ def register_slack_event_handlers(app: App):
             )
             say(
                 channel=context.user_id,
-                text=f"I'm sorry for being distracted! This app failed to send your data to Notion (error: {e})\n"
-                "Please contact this app's user support email address :bow:",
+                text=f":x: Saving your data to Notion failed. {GENERIC_ERROR_TEXT}",
             )
 
     app.view("send-to-notion-database")(
