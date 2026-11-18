@@ -205,7 +205,7 @@ def test_denied_view_submission_gets_errors(app, slack_api, payload, block_id):
     send.assert_not_called()
 
 
-def test_denied_home_opened_does_not_publish(app, slack_api):
+def test_denied_home_opened_without_tab_does_not_publish(app, slack_api):
     resp = dispatch(app, home_opened(DENIED_USER))
     assert resp.status == 200
     slack_api["views_publish"].assert_not_called()

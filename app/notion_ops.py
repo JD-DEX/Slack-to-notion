@@ -14,6 +14,12 @@ UNTITLED = "Untitled"
 MAX_OPTIONS = 100
 MAX_OPTION_TEXT_LENGTH = 75
 
+# Form validation messages. Each one tells the user what to type.
+TITLE_ERROR = "Enter a title."
+NUMBER_ERROR = "Enter a number, for example 42, -3 or 0.5."
+URL_ERROR = "Enter a full web address that starts with http:// or https://"
+EMAIL_ERROR = "Enter an email address, for example name@example.com."
+
 # An optional sign, then digits with an optional fraction (for example: 3, -2, 0.5, -.25, 10.).
 _NUMBER_PATTERN = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
 
@@ -50,13 +56,13 @@ def validate_submission(state_values: dict) -> Dict[str, str]:
         value_obj = action_id_to_value[action_id]
         str_value = value_obj.get("value")
         if action_id == "title" and (str_value is None or str_value.strip() == ""):
-            errors[block_id] = "The title must not be empty"
+            errors[block_id] = TITLE_ERROR
         if action_id == "number" and str_value is not None and parse_number(str_value) is None:
-            errors[block_id] = "This property must be a number"
-        if action_id == "url" and str_value is not None and not str_value.startswith("http"):
-            errors[block_id] = "This property must be a URL"
+            errors[block_id] = NUMBER_ERROR
+        if action_id == "url" and str_value is not None and not str_value.lower().startswith(("http://", "https://")):
+            errors[block_id] = URL_ERROR
         if action_id == "email" and str_value is not None and "@" not in str_value:
-            errors[block_id] = "This property must be an email address"
+            errors[block_id] = EMAIL_ERROR
     return errors
 
 
