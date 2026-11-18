@@ -155,7 +155,7 @@ Set that GHCR package to **private** in its package settings.
 
 ### Notion API version and data sources
 
-This app uses Notion API version `2025-09-03`. In this version a database can hold more than one data source.
+This app uses Notion API version `2026-03-11` (the latest stable version). Since `2025-09-03`, a database can hold more than one data source.
 The database picker lists data sources, not databases. A database with two data sources shows two entries,
 and you pick the one to write to. The picker shows only the data source title, so two data sources with the
 same title look the same. Give data sources distinct titles to avoid confusion.

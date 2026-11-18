@@ -4,9 +4,10 @@ from typing import Any, Dict, List, Optional, Union
 
 from notion_client import Client
 
-# Notion API version 2025-09-03 splits databases into data sources.
-# Set it explicitly so that an SDK upgrade cannot change the API version without a code change.
-NOTION_API_VERSION = "2025-09-03"
+# Latest Notion API version. Since 2025-09-03, databases hold one or more data sources.
+# 2026-03-11 renames "archived" to "in_trash" (and changes block APIs this app does not use).
+# notion-client 3.x sends 2025-09-03 by default, so set the version explicitly here.
+NOTION_API_VERSION = "2026-03-11"
 
 UNTITLED = "Untitled"
 # Slack limits: an options response has at most 100 options, and option text has at most 75 characters.
@@ -82,7 +83,8 @@ def build_notion_database_options(notion: Client, payload: dict) -> List[Dict[st
     # This also keeps the request inside Slack's 3-second limit.
     while len(databases) < MAX_OPTIONS:
         page = notion.search(query=query, filter=database_filter, start_cursor=cursor, page_size=MAX_OPTIONS)
-        databases = databases + page["results"]
+        # Skip data sources in the trash. Notion cannot add pages to them.
+        databases = databases + [r for r in page["results"] if not r.get("in_trash")]
         cursor = page.get("next_cursor")
         if cursor is None:
             break

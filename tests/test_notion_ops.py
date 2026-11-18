@@ -4,6 +4,8 @@ import pytest
 
 from app.notion_ops import (
     MAX_OPTIONS,
+    NOTION_API_VERSION,
+    new_notion_client,
     UNTITLED,
     build_input_blocks,
     build_notion_database_options,
@@ -148,6 +150,26 @@ def test_options_search_for_data_sources():
     kwargs = notion.search.call_args.kwargs
     assert kwargs["query"] == "abc"
     assert kwargs["filter"] == {"property": "object", "value": "data_source"}
+
+
+def test_options_skip_trashed_data_sources():
+    notion = MagicMock()
+    notion.search.return_value = _search_result(
+        [
+            {"object": "data_source", "id": "ds-live", "title": [{"plain_text": "Live"}], "in_trash": False},
+            {"object": "data_source", "id": "ds-trash", "title": [{"plain_text": "Old"}], "in_trash": True},
+        ]
+    )
+
+    options = build_notion_database_options(notion, {"value": ""})
+
+    assert [o["value"] for o in options] == ["ds-live"]
+
+
+def test_client_sends_latest_notion_version():
+    notion = new_notion_client("test-notion-token")
+    assert NOTION_API_VERSION == "2026-03-11"
+    assert notion.client.headers["Notion-Version"] == "2026-03-11"
 
 
 def test_options_respect_slack_limits():
