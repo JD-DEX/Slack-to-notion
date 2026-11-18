@@ -12,6 +12,7 @@ from app.notion_ops import (
     build_notion_database_options,
     build_input_blocks,
     send_to_notion,
+    validate_submission,
 )
 
 
@@ -222,22 +223,8 @@ def register_slack_event_handlers(app: App):
         lazy=[select_notion_database_lazy],
     )
 
-    def _validate_send_to_notion_submission(state_values: dict) -> dict:
-        errors = {}
-        for block_id, action_id_to_value in state_values.items():
-            action_id = list(action_id_to_value.keys())[0]
-            value_obj = action_id_to_value[action_id]
-            str_value = value_obj.get("value")
-            if action_id == "number" and str_value is not None and not str_value.isnumeric():
-                errors[block_id] = "This property must be a number"
-            if action_id == "url" and str_value is not None and not str_value.startswith("http"):
-                errors[block_id] = "This property must be a URL"
-            if action_id == "email" and str_value is not None and "@" not in str_value:
-                errors[block_id] = "This property must be an email address"
-        return errors
-
     def sent_to_notion_ack(ack: Ack, view: dict):
-        errors = _validate_send_to_notion_submission(view["state"]["values"])
+        errors = validate_submission(view["state"]["values"])
         if len(errors) > 0:
             ack(response_action="errors", errors=errors)
             return
@@ -269,7 +256,7 @@ def register_slack_event_handlers(app: App):
         client: WebClient,
         logger: logging.Logger,
     ):
-        errors = _validate_send_to_notion_submission(view["state"]["values"])
+        errors = validate_submission(view["state"]["values"])
         if len(errors) > 0:
             return
         try:

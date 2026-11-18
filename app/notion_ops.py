@@ -1,5 +1,58 @@
-from typing import List, Dict, Any
+import math
+import re
+from typing import Any, Dict, List, Optional, Union
+
 from notion_client import Client
+
+UNTITLED = "Untitled"
+# Slack limits: an options response has at most 100 options, and option text has at most 75 characters.
+MAX_OPTIONS = 100
+MAX_OPTION_TEXT_LENGTH = 75
+
+# An optional sign, then digits with an optional fraction (for example: 3, -2, 0.5, -.25, 10.).
+_NUMBER_PATTERN = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
+
+
+def plain_title(rich_text: Optional[List[dict]]) -> str:
+    """Return the plain text of a Notion title, or "Untitled" when the title is empty."""
+    text = "".join(item.get("plain_text", "") for item in (rich_text or [])).strip()
+    return text or UNTITLED
+
+
+def parse_number(value: Optional[str]) -> Optional[Union[int, float]]:
+    """Parse a number from a form input. Return None if the value is not a finite number.
+
+    Values with no fractional part are returned as int (for example "3" and "3.0" give 3).
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not _NUMBER_PATTERN.match(text):
+        return None
+    if "." not in text:
+        return int(text)
+    number = float(text)
+    if not math.isfinite(number):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def validate_submission(state_values: dict) -> Dict[str, str]:
+    """Return a dict of block_id -> error message for invalid form values."""
+    errors = {}
+    for block_id, action_id_to_value in state_values.items():
+        action_id = list(action_id_to_value.keys())[0]
+        value_obj = action_id_to_value[action_id]
+        str_value = value_obj.get("value")
+        if action_id == "title" and (str_value is None or str_value.strip() == ""):
+            errors[block_id] = "The title must not be empty"
+        if action_id == "number" and str_value is not None and parse_number(str_value) is None:
+            errors[block_id] = "This property must be a number"
+        if action_id == "url" and str_value is not None and not str_value.startswith("http"):
+            errors[block_id] = "This property must be a URL"
+        if action_id == "email" and str_value is not None and "@" not in str_value:
+            errors[block_id] = "This property must be an email address"
+    return errors
 
 
 def find_notion_database(notion: Client, database_id: str) -> dict:
@@ -11,18 +64,19 @@ def build_notion_database_options(notion: Client, payload: dict) -> List[Dict[st
     query = payload.get("value")
     database_filter = {"property": "object", "value": "database"}
     cursor = None
-    first_page = notion.search(query=query, filter=database_filter, start_cursor=cursor)
-    databases = databases + first_page["results"]
-    cursor = first_page["next_cursor"]
-    while cursor is not None:
-        page = notion.search(query=query, filter=database_filter, start_cursor=cursor)
+    # Slack shows at most 100 options, so stop after 100 results.
+    # This also keeps the request inside Slack's 3-second limit.
+    while len(databases) < MAX_OPTIONS:
+        page = notion.search(query=query, filter=database_filter, start_cursor=cursor, page_size=MAX_OPTIONS)
         databases = databases + page["results"]
-        cursor = page["next_cursor"]
+        cursor = page.get("next_cursor")
+        if cursor is None:
+            break
 
     options = []
-    for database in databases:
+    for database in databases[:MAX_OPTIONS]:
         database_id = database["id"]
-        database_name = database["title"][0]["plain_text"]
+        database_name = plain_title(database.get("title"))[:MAX_OPTION_TEXT_LENGTH]
         options.append({"text": {"type": "plain_text", "text": database_name}, "value": database_id})
     return options
 
@@ -36,7 +90,7 @@ def _build_option(o: dict) -> dict:
 
 def build_input_blocks(database: dict) -> List[Dict[str, Any]]:
     blocks = []
-    database_name = database["title"][0]["plain_text"][:24]
+    database_name = plain_title(database.get("title"))[:24]
     blocks.append(
         {
             "type": "section",
@@ -170,7 +224,7 @@ def to_page_properties(state_values: dict) -> dict:
         elif action_id == "rich_text" and v[action_id].get("value") is not None:
             properties[block_id] = {"rich_text": [{"text": {"content": v[action_id]["value"]}}]}
         elif action_id == "number" and v[action_id].get("value") is not None:
-            properties[block_id] = {"number": int(v[action_id]["value"])}
+            properties[block_id] = {"number": parse_number(v[action_id]["value"])}
         elif action_id == "date" and v[action_id].get("selected_date") is not None:
             properties[block_id] = {"date": {"start": v[action_id]["selected_date"]}}
         elif action_id == "checkbox" and v[action_id].get("selected_options") is not None:
