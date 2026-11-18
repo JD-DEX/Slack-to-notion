@@ -2,6 +2,7 @@ import logging
 import math
 import re
 from typing import Any, Dict, List, NamedTuple, Optional, Union
+from urllib.parse import urlsplit
 
 from notion_client import Client, RetryOptions
 
@@ -14,6 +15,12 @@ UNTITLED = "Untitled"
 # Slack limits: an options response has at most 100 options, and option text has at most 75 characters.
 MAX_OPTIONS = 100
 MAX_OPTION_TEXT_LENGTH = 75
+# A modal has at most 100 blocks.
+MAX_MODAL_BLOCKS = 100
+# Notion accepts at most 2000 characters in one rich text object (title and rich_text values).
+MAX_NOTION_TEXT_LENGTH = 2000
+# Short, so the database name and the "Select Database" button fit on one line.
+MAX_DATABASE_NAME_LENGTH = 24
 
 # Slack waits 3 seconds for an options response. The search must fail before that time.
 SEARCH_TIMEOUT_MS = 2_500
@@ -38,6 +45,11 @@ def plain_title(rich_text: Optional[List[dict]]) -> str:
     return text or UNTITLED
 
 
+def shorten(text: str, limit: int) -> str:
+    """Return the text, or its first characters and "…" when it is longer than the limit."""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def parse_number(value: Optional[str]) -> Optional[Union[int, float]]:
     """Parse a number from a form input. Return None if the value is not a finite number.
 
@@ -56,6 +68,11 @@ def parse_number(value: Optional[str]) -> Optional[Union[int, float]]:
     return int(number) if number.is_integer() else number
 
 
+def _is_http_url(value: str) -> bool:
+    parts = urlsplit(value.strip())
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
 def validate_submission(state_values: dict) -> Dict[str, str]:
     """Return a dict of block_id -> error message for invalid form values."""
     errors = {}
@@ -67,7 +84,7 @@ def validate_submission(state_values: dict) -> Dict[str, str]:
             errors[block_id] = "The title must not be empty"
         if action_id == "number" and str_value is not None and parse_number(str_value) is None:
             errors[block_id] = "This property must be a number"
-        if action_id == "url" and str_value is not None and not str_value.startswith("http"):
+        if action_id == "url" and str_value is not None and not _is_http_url(str_value):
             errors[block_id] = "This property must be a URL"
         if action_id == "email" and str_value is not None and "@" not in str_value:
             errors[block_id] = "This property must be an email address"
@@ -116,138 +133,134 @@ def build_notion_database_options(notion: Client, payload: dict) -> List[Dict[st
     options = []
     for database in databases[:MAX_OPTIONS]:
         database_id = database["id"]
-        database_name = plain_title(database.get("title"))[:MAX_OPTION_TEXT_LENGTH]
+        database_name = shorten(plain_title(database.get("title")), MAX_OPTION_TEXT_LENGTH)
         options.append({"text": {"type": "plain_text", "text": database_name}, "value": database_id})
     return options
 
 
 def _build_option(o: dict) -> dict:
     return {
-        "text": {"type": "plain_text", "text": o["name"]},
+        "text": {"type": "plain_text", "text": shorten(o["name"], MAX_OPTION_TEXT_LENGTH)},
         "value": o["id"],
     }
 
 
-def build_input_blocks(database: dict) -> List[Dict[str, Any]]:
-    blocks = []
-    database_name = plain_title(database.get("title"))[:24]
-    blocks.append(
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f'You\'re going to send data to Notion database *"{database_name}"*',
-            },
-            "accessory": {
-                "type": "button",
-                "action_id": "go-back-to-database-select-view",
-                "text": {"type": "plain_text", "text": "Select Database"},
-                "value": "1",
-            },
-        },
-    )
-    title_key = list(filter(lambda p: p[1]["type"] == "title", database["properties"].items()))[0][0]
-    title = database["properties"].pop(title_key)
-    blocks.append(
-        {
-            "type": "input",
-            "block_id": title["id"],
-            "element": {"type": "plain_text_input", "action_id": "title"},
-            "label": {"type": "plain_text", "text": title_key},
-            "optional": False,
+def _select_element(prop_type: str, options: List[dict]) -> Dict[str, Any]:
+    """Return a select menu for a select or multi_select property.
+
+    The action ID is the property type, which to_page_properties reads.
+    A static menu has at most 100 options. Above that, Slack asks the app for the options.
+    """
+    multi = "multi_" if prop_type == "multi_select" else ""
+    if len(options) <= MAX_OPTIONS:
+        return {
+            "type": f"{multi}static_select",
+            "options": [_build_option(o) for o in options],
+            "action_id": prop_type,
         }
-    )
-    for name, prop in database["properties"].items():
+    return {"type": f"{multi}external_select", "action_id": prop_type, "min_query_length": 0}
+
+
+def build_property_options(data_source: dict, property_id: str, query: str) -> List[Dict[str, Any]]:
+    """Return at most 100 options of a select or multi_select property whose names contain the query."""
+    prop = next((p for p in data_source.get("properties", {}).values() if p.get("id") == property_id), None)
+    if prop is None or prop.get("type") not in ("select", "multi_select"):
+        return []
+    query = (query or "").strip().casefold()
+    matches = [o for o in prop[prop["type"]]["options"] if query in o["name"].casefold()]
+    return [_build_option(o) for o in matches[:MAX_OPTIONS]]
+
+
+def _property_element(prop_type: str, prop: dict) -> Optional[Dict[str, Any]]:
+    """Return the form element for a property type, or None for unsupported types.
+
+    Not supported yet: people, relation, formula, rollup and files.
+    """
+    if prop_type in ("select", "multi_select"):
+        options = prop[prop_type]["options"]
+        return _select_element(prop_type, options) if options else None
+    if prop_type == "rich_text":
+        return {
+            "type": "plain_text_input",
+            "multiline": True,
+            "max_length": MAX_NOTION_TEXT_LENGTH,
+            "action_id": prop_type,
+        }
+    if prop_type in ("number", "url", "email", "phone_number"):
+        return {"type": "plain_text_input", "action_id": prop_type}
+    if prop_type == "date":
+        return {"type": "datepicker", "action_id": prop_type}
+    if prop_type == "checkbox":
+        return {
+            "type": "checkboxes",
+            "options": [
+                {
+                    "text": {"type": "plain_text", "text": "Yes"},
+                    "description": {"type": "plain_text", "text": "This will be synchronized in Notion"},
+                    "value": "checked",
+                }
+            ],
+            "action_id": prop_type,
+        }
+    return None
+
+
+def build_input_blocks(database: dict) -> List[Dict[str, Any]]:
+    database_name = shorten(plain_title(database.get("title")), MAX_DATABASE_NAME_LENGTH)
+    header = {
+        "type": "section",
+        # plain_text, so characters in the name have no mrkdwn meaning.
+        "text": {"type": "plain_text", "text": f'You\'re going to send data to Notion database "{database_name}"'},
+        "accessory": {
+            "type": "button",
+            "action_id": "go-back-to-database-select-view",
+            "text": {"type": "plain_text", "text": "Select Database"},
+            "value": "1",
+        },
+    }
+    properties = database["properties"]
+    title_key = next(name for name, prop in properties.items() if prop["type"] == "title")
+    title_block = {
+        "type": "input",
+        "block_id": properties[title_key]["id"],
+        "element": {"type": "plain_text_input", "max_length": MAX_NOTION_TEXT_LENGTH, "action_id": "title"},
+        "label": {"type": "plain_text", "text": title_key},
+        "optional": False,
+    }
+
+    property_blocks = []
+    for name, prop in properties.items():
+        if name == title_key:
+            continue
         prop_type = prop.get("type", "text")
-        label = {"type": "plain_text", "text": name}
-        block_id = prop.get("id", name)
-        if prop_type == "select" and len(prop["select"]["options"]) > 0:
-            blocks.append(
+        element = _property_element(prop_type, prop)
+        if element is not None:
+            property_blocks.append(
                 {
                     "type": "input",
-                    "block_id": block_id,
-                    "element": {
-                        "type": "static_select",
-                        "options": [_build_option(o) for o in prop["select"]["options"]],
-                        "action_id": prop_type,
-                    },
-                    "label": label,
-                    "optional": True,
-                }
-            )
-        elif prop_type == "multi_select" and len(prop["multi_select"]["options"]) > 0:
-            blocks.append(
-                {
-                    "type": "input",
-                    "block_id": block_id,
-                    "element": {
-                        "type": "multi_static_select",
-                        "options": [_build_option(o) for o in prop["multi_select"]["options"]],
-                        "action_id": prop_type,
-                    },
-                    "label": label,
-                    "optional": True,
-                }
-            )
-        elif prop_type == "rich_text":
-            blocks.append(
-                {
-                    "type": "input",
-                    "block_id": block_id,
-                    "element": {"type": "plain_text_input", "multiline": True, "action_id": prop_type},
-                    "label": label,
-                    "optional": True,
-                }
-            )
-        elif prop_type in ("number", "url", "email", "phone_number"):
-            blocks.append(
-                {
-                    "type": "input",
-                    "block_id": block_id,
-                    "element": {"type": "plain_text_input", "action_id": prop_type},
-                    "label": label,
-                    "optional": True,
-                }
-            )
-        elif prop_type == "date":
-            blocks.append(
-                {
-                    "type": "input",
-                    "block_id": block_id,
-                    "element": {"type": "datepicker", "action_id": prop_type},
-                    "label": label,
-                    "optional": True,
-                }
-            )
-        elif prop_type == "checkbox":
-            blocks.append(
-                {
-                    "type": "input",
-                    "block_id": block_id,
-                    "element": {
-                        "type": "checkboxes",
-                        "options": [
-                            {
-                                "text": {"type": "plain_text", "text": " "},
-                                "description": {"type": "plain_text", "text": "This will be synchronized in Notion"},
-                                "value": "checked",
-                            }
-                        ],
-                        "action_id": prop_type,
-                    },
-                    "label": label,
+                    "block_id": prop.get("id", name),
+                    "element": element,
+                    "label": {"type": "plain_text", "text": name},
                     "optional": True,
                 }
             )
 
-        # The following ones are not yet supported
-        # people
-        # relation
-        # formula
-        # rollup
-        # files
+    # The header and the title block use 2 of the blocks in the modal.
+    room = MAX_MODAL_BLOCKS - 2
+    if len(property_blocks) > room:
+        hidden = len(property_blocks) - (room - 1)
+        note = {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "plain_text",
+                    "text": f"{hidden} properties are not shown. A Slack form has at most {MAX_MODAL_BLOCKS} blocks.",
+                }
+            ],
+        }
+        property_blocks = property_blocks[: room - 1] + [note]
 
-    return blocks
+    return [header, title_block] + property_blocks
 
 
 def to_page_properties(state_values: dict) -> dict:

@@ -84,6 +84,23 @@ def options(user):
     }
 
 
+def property_options(user, query=""):
+    return {
+        "type": "block_suggestion",
+        "action_id": "select",
+        "block_id": "status-id",
+        "user": {"id": user},
+        "team": _team(),
+        "value": query,
+        "view": {
+            "type": "modal",
+            "id": "V2",
+            "callback_id": "send-to-notion-database",
+            "private_metadata": json.dumps({"notion_data_source_id": "ds-1"}),
+        },
+    }
+
+
 def select_view_submission(user):
     return {
         "type": "view_submission",
@@ -264,3 +281,34 @@ def test_allowed_options_reach_the_handler(app, slack_api, notion):
 def test_allowed_home_opened_publishes_home_tab(app, slack_api):
     dispatch(app, home_opened(ALLOWED_USER))
     slack_api["views_publish"].assert_called_once()
+
+
+def _status_data_source(count):
+    options = [{"id": f"opt-{i}", "name": f"Status {i}"} for i in range(count)]
+    status = {"id": "status-id", "type": "select", "select": {"options": options}}
+    return {"id": "ds-1", "properties": {"Name": {"id": "title", "type": "title"}, "Status": status}}
+
+
+def test_allowed_property_options_come_from_the_data_source(app, slack_api, notion):
+    notion.search_client.data_sources.retrieve.return_value = _status_data_source(150)
+
+    resp = dispatch(app, property_options(ALLOWED_USER, "status 14"))
+
+    values = [o["value"] for o in json.loads(resp.body)["options"]]
+    assert values == ["opt-14"] + [f"opt-{i}" for i in range(140, 150)]
+    notion.search_client.data_sources.retrieve.assert_called_once_with(data_source_id="ds-1")
+
+
+def test_property_options_are_empty_when_notion_fails(app, slack_api, notion):
+    notion.search_client.data_sources.retrieve.side_effect = RuntimeError("Notion is down")
+
+    resp = dispatch(app, property_options(ALLOWED_USER))
+
+    assert json.loads(resp.body) == {"options": []}
+
+
+def test_denied_property_options_get_empty_list(app, slack_api, notion):
+    resp = dispatch(app, property_options(DENIED_USER))
+
+    assert json.loads(resp.body) == {"options": []}
+    notion.search_client.data_sources.retrieve.assert_not_called()

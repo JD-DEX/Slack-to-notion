@@ -10,6 +10,7 @@ from app.notion_ops import (
     NotionClients,
     find_notion_data_source,
     build_notion_database_options,
+    build_property_options,
     build_input_blocks,
     send_to_notion,
     validate_submission,
@@ -137,6 +138,20 @@ def register_slack_event_handlers(app: App, notion: NotionClients):
             options = build_notion_database_options(notion.search, payload)
         except Exception as e:
             log_failure(logger, "Searching Notion databases failed", e)
+            options = []
+        ack(options=options)
+
+    # A select or multi_select property with more than 100 options uses an external select menu.
+    # Its action ID is the property type and its block ID is the property ID.
+    @app.options("select")
+    @app.options("multi_select")
+    def search_property_options(ack: Ack, payload: dict, body: dict, logger: logging.Logger):
+        try:
+            data_source_id = json.loads(body["view"]["private_metadata"])["notion_data_source_id"]
+            data_source = find_notion_data_source(notion.search, data_source_id)
+            options = build_property_options(data_source, payload["block_id"], payload.get("value", ""))
+        except Exception as e:
+            log_failure(logger, "Searching the property options failed", e)
             options = []
         ack(options=options)
 

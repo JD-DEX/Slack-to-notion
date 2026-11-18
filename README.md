@@ -156,6 +156,15 @@ The database picker lists data sources, not databases. A database with two data 
 and you pick the one to write to. The picker shows only the data source title, so two data sources with the
 same title look the same. Give data sources distinct titles to avoid confusion.
 
+### Form limits
+
+Slack and Notion limit the form:
+
+* A select or multi-select property with more than 100 options shows a search menu instead of a fixed list.
+* Option names longer than 75 characters are shortened in Slack. The full option is saved in Notion.
+* A form shows at most 97 properties after the title. The form tells the user how many properties are not shown.
+* Title and text fields accept at most 2000 characters.
+
 ## How to run the app
 
 There are three ways to open the modal dialog to send data to Notion.
