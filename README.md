@@ -137,6 +137,17 @@ Edit `requirements.in`, then regenerate the hashed lockfile:
 uv pip compile --universal --python-version 3.13 --generate-hashes requirements.in -o requirements.txt
 ```
 
+### Run the tests
+
+The tests use mocked Slack and Notion clients. They need no tokens and no network.
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install --require-hashes -r requirements-dev.txt
+python -m pytest
+```
+
 ### Container image on GHCR
 
 The workflow in `.github/workflows/docker-image.yml` publishes an image to GHCR on each push to `main`.
