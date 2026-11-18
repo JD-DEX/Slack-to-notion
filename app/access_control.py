@@ -18,7 +18,9 @@ from slack_bolt.request.payload_utils import (
 from slack_sdk import WebClient
 
 ALLOWED_USERS_ENV_VAR = "ALLOWED_SLACK_USER_IDS"
-DENIED_MESSAGE = "Sorry, you do not have access to this app. Ask the app's administrator for access."
+DENIED_MESSAGE = (
+    "You do not have access to this app. Ask the app's administrator to add your Slack user ID to the list of allowed users."
+)
 
 
 def parse_allowed_user_ids(raw: Optional[str]) -> FrozenSet[str]:
@@ -42,6 +44,10 @@ def _denied_modal() -> dict:
         "close": {"type": "plain_text", "text": "Close"},
         "blocks": [{"type": "section", "text": {"type": "plain_text", "text": DENIED_MESSAGE}}],
     }
+
+
+def _denied_home_view() -> dict:
+    return {"type": "home", "blocks": [{"type": "section", "text": {"type": "plain_text", "text": DENIED_MESSAGE}}]}
 
 
 def _deny(ack: Ack, body: dict, client: WebClient, logger: logging.Logger) -> BoltResponse:
@@ -72,7 +78,16 @@ def _deny(ack: Ack, body: dict, client: WebClient, logger: logging.Logger) -> Bo
             except Exception as e:
                 logger.warning("Could not open the access denied modal (%s)", type(e).__name__)
         return response
-    # Events (such as app_home_opened), view_closed and anything else: ack and do nothing.
+    event = body.get("event") or {}
+    if event.get("type") == "app_home_opened" and event.get("tab") == "home" and event.get("user"):
+        response = ack()
+        # Without this view, a denied user sees an empty Home tab and no reason.
+        try:
+            client.views_publish(user_id=event["user"], view=_denied_home_view())
+        except Exception as e:
+            logger.warning("Could not publish the access denied Home tab (%s)", type(e).__name__)
+        return response
+    # Other events, view_closed and anything else: ack and do nothing.
     return ack()
 
 
