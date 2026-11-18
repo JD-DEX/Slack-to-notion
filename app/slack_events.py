@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Optional
 
 from slack_bolt import App, Ack, BoltContext
 from slack_sdk import WebClient
@@ -52,7 +53,7 @@ def status_modal(text: str, callback_id: str) -> dict:
     }
 
 
-def show_result(client: WebClient, view_id: str, user_id: str, text: str, logger: logging.Logger) -> None:
+def show_result(client: WebClient, view_id: str, user_id: Optional[str], text: str, logger: logging.Logger) -> None:
     """Show the result in the modal. Send a DM only when the modal cannot be updated.
 
     The user can close the modal before the lazy listener ends, so the update can fail.
