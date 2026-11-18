@@ -1,19 +1,21 @@
 import logging
 import os
 import sys
-from typing import Callable
-from slack_bolt import App, BoltContext
+from typing import FrozenSet
+
+from dotenv import load_dotenv
+from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from app.access_control import ALLOWED_USERS_ENV_VAR, build_allowlist_middleware, parse_allowed_user_ids
+from app.notion_ops import NotionClients, new_notion_clients
 from app.slack_events import register_slack_event_handlers
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # These libraries log raw Slack payloads and HTTP bodies at DEBUG level.
 # Payloads contain user form input, so keep them at INFO or higher at all times.
 _THIRD_PARTY_LOGGERS = ("slack_bolt", "slack_sdk", "notion_client", "httpx", "httpcore", "urllib3", "websocket")
+
+REQUIRED_TOKEN_ENV_VARS = ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "NOTION_API_TOKEN")
 
 
 def configure_logging() -> None:
@@ -26,32 +28,35 @@ def configure_logging() -> None:
         logging.getLogger(name).setLevel(max(level, logging.INFO))
 
 
-slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
-slack_app_level_token = os.environ.get("SLACK_APP_TOKEN")
-notion_api_token = os.environ.get("NOTION_API_TOKEN")
-
-# Fail closed: refuse to start without an allowlist.
-allowed_user_ids = parse_allowed_user_ids(os.environ.get(ALLOWED_USERS_ENV_VAR))
-if not allowed_user_ids:
-    sys.exit(
-        f"Startup failed: {ALLOWED_USERS_ENV_VAR} is empty or not set. "
-        "Set it to a comma-separated list of Slack user IDs (for example U01234ABCDE,U05678FGHIJ)."
-    )
-
-app = App(token=slack_bot_token)
-
-# Register the allowlist first so that it runs before all other middleware and listeners.
-app.use(build_allowlist_middleware(allowed_user_ids))
+def build_app(allowed_user_ids: FrozenSet[str], notion: NotionClients, **app_kwargs) -> App:
+    """Build the Bolt app. app_kwargs go to App (for example token=...)."""
+    app = App(**app_kwargs)
+    # Register the allowlist first so that it runs before all other middleware and listeners.
+    app.use(build_allowlist_middleware(allowed_user_ids))
+    register_slack_event_handlers(app, notion)
+    return app
 
 
-@app.middleware
-def attach_notion_token(context: BoltContext, next_: Callable):
-    context["notion_token"] = notion_api_token
-    next_()
+def main() -> None:
+    load_dotenv()
+    configure_logging()
 
+    # Fail closed: refuse to start without the tokens and the allowlist.
+    tokens = {name: os.environ.get(name, "").strip() for name in REQUIRED_TOKEN_ENV_VARS}
+    missing = [name for name, value in tokens.items() if not value]
+    allowed_user_ids = parse_allowed_user_ids(os.environ.get(ALLOWED_USERS_ENV_VAR))
+    if not allowed_user_ids:
+        missing.append(ALLOWED_USERS_ENV_VAR)
+    if missing:
+        sys.exit(
+            f"Startup failed. These variables are empty or not set: {', '.join(missing)}. "
+            f"Set every token. Set {ALLOWED_USERS_ENV_VAR} to a comma-separated list of Slack user IDs "
+            "(for example U01234ABCDE,U05678FGHIJ)."
+        )
 
-register_slack_event_handlers(app)
+    app = build_app(allowed_user_ids, new_notion_clients(tokens["NOTION_API_TOKEN"]), token=tokens["SLACK_BOT_TOKEN"])
+    SocketModeHandler(app, tokens["SLACK_APP_TOKEN"]).start()
+
 
 if __name__ == "__main__":
-    configure_logging()
-    SocketModeHandler(app, slack_app_level_token).start()
+    main()

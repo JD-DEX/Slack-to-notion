@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 
 from slack_bolt import App, Ack, Say, BoltContext
 from slack_sdk import WebClient
@@ -8,14 +7,13 @@ from slack_sdk import WebClient
 from notion_client import APIResponseError
 
 from app.notion_ops import (
+    NotionClients,
     find_notion_data_source,
-    new_notion_client,
     build_notion_database_options,
     build_input_blocks,
     send_to_notion,
     validate_submission,
 )
-
 
 GENERIC_ERROR_TEXT = "Sorry, something went wrong. Please try again later or contact the app's administrator."
 
@@ -38,7 +36,7 @@ def log_failure(logger: logging.Logger, message: str, e: Exception) -> None:
         logger.exception(message)
 
 
-def register_slack_event_handlers(app: App):
+def register_slack_event_handlers(app: App, notion: NotionClients):
     #
     # Home tab
     #
@@ -102,12 +100,6 @@ def register_slack_event_handlers(app: App):
             "blocks": blocks,
         }
 
-    def resolve_notion_token(context: BoltContext) -> str:
-        token = context.get("notion_token")
-        if token is None:
-            raise Exception("Unexpectedly Notion installation is not found!")
-        return token
-
     @app.action("link-button")
     def just_ack_link_buttons(ack: Ack):
         ack()
@@ -140,10 +132,9 @@ def register_slack_event_handlers(app: App):
         )
 
     @app.options("search-notion-database")
-    def search_notion_database(ack: Ack, payload: dict, context: BoltContext, logger: logging.Logger):
+    def search_notion_database(ack: Ack, payload: dict, logger: logging.Logger):
         try:
-            notion = new_notion_client(resolve_notion_token(context))
-            options = build_notion_database_options(notion, payload)
+            options = build_notion_database_options(notion.search, payload)
         except Exception as e:
             log_failure(logger, "Searching Notion databases failed", e)
             options = []
@@ -179,8 +170,7 @@ def register_slack_event_handlers(app: App):
         try:
             block_key = "search-notion-database"
             data_source_id = view["state"]["values"][block_key][block_key]["selected_option"]["value"]
-            notion = new_notion_client(resolve_notion_token(context))
-            data_source = find_notion_data_source(notion, data_source_id)
+            data_source = find_notion_data_source(notion.default, data_source_id)
             blocks = build_input_blocks(data_source)
             client.views_update(
                 view_id=view["id"],
@@ -262,8 +252,7 @@ def register_slack_event_handlers(app: App):
             return
         try:
             data_source_id = json.loads(view["private_metadata"])["notion_data_source_id"]
-            notion = new_notion_client(resolve_notion_token(context))
-            new_page = send_to_notion(notion, data_source_id, view["state"]["values"])
+            new_page = send_to_notion(notion.default, data_source_id, view["state"]["values"])
             page_url = new_page["url"]
             client.views_update(
                 view_id=view["id"],

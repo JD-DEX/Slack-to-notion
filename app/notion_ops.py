@@ -1,8 +1,9 @@
+import logging
 import math
 import re
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Union
 
-from notion_client import Client
+from notion_client import Client, RetryOptions
 
 # Latest Notion API version. Since 2025-09-03, databases hold one or more data sources.
 # 2026-03-11 renames "archived" to "in_trash" (and changes block APIs this app does not use).
@@ -13,6 +14,19 @@ UNTITLED = "Untitled"
 # Slack limits: an options response has at most 100 options, and option text has at most 75 characters.
 MAX_OPTIONS = 100
 MAX_OPTION_TEXT_LENGTH = 75
+
+# Slack waits 3 seconds for an options response. The search must fail before that time.
+SEARCH_TIMEOUT_MS = 2_500
+# Loading a data source and creating a page run after the ack, so they can wait longer.
+DEFAULT_TIMEOUT_MS = 15_000
+DEFAULT_RETRY = RetryOptions(max_retries=2, initial_retry_delay_ms=500, max_retry_delay_ms=5_000)
+
+# The SDK logs failed requests at WARNING level with the Notion error message.
+# Notion validation messages can repeat the submitted form values, so the SDK logger
+# shows only ERROR (the SDK never logs at ERROR). Without a logger, the SDK also adds
+# a new console handler for each client.
+_SDK_LOGGER = logging.getLogger("app.notion_sdk")
+_SDK_LOGGER.setLevel(logging.ERROR)
 
 # An optional sign, then digits with an optional fraction (for example: 3, -2, 0.5, -.25, 10.).
 _NUMBER_PATTERN = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)$")
@@ -60,8 +74,25 @@ def validate_submission(state_values: dict) -> Dict[str, str]:
     return errors
 
 
-def new_notion_client(token: str) -> Client:
-    return Client(auth=token, notion_version=NOTION_API_VERSION)
+class NotionClients(NamedTuple):
+    """Notion clients made once at startup and shared by all requests."""
+
+    search: Client  # For the database picker: short timeout and no retries.
+    default: Client  # For loading a data source and creating pages.
+
+
+def new_notion_clients(token: str) -> NotionClients:
+    def make(timeout_ms: int, retry: Union[RetryOptions, bool]) -> Client:
+        return Client(
+            auth=token,
+            notion_version=NOTION_API_VERSION,
+            timeout_ms=timeout_ms,
+            retry=retry,
+            logger=_SDK_LOGGER,
+            log_level=logging.ERROR,
+        )
+
+    return NotionClients(search=make(SEARCH_TIMEOUT_MS, False), default=make(DEFAULT_TIMEOUT_MS, DEFAULT_RETRY))
 
 
 def find_notion_data_source(notion: Client, data_source_id: str) -> dict:
@@ -75,19 +106,12 @@ def build_notion_database_options(notion: Client, payload: dict) -> List[Dict[st
     A database with more than one data source returns one search result per data source,
     so the user picks the exact data source to write to.
     """
-    databases = []
     query = payload.get("value")
     database_filter = {"property": "object", "value": "data_source"}
-    cursor = None
-    # Slack shows at most 100 options, so stop after 100 results.
-    # This also keeps the request inside Slack's 3-second limit.
-    while len(databases) < MAX_OPTIONS:
-        page = notion.search(query=query, filter=database_filter, start_cursor=cursor, page_size=MAX_OPTIONS)
-        # Skip data sources in the trash. Notion cannot add pages to them.
-        databases = databases + [r for r in page["results"] if not r.get("in_trash")]
-        cursor = page.get("next_cursor")
-        if cursor is None:
-            break
+    # Request one page only. Slack shows at most 100 options and waits only 3 seconds.
+    page = notion.search(query=query, filter=database_filter, page_size=MAX_OPTIONS)
+    # Skip data sources in the trash. Notion cannot add pages to them.
+    databases = [r for r in page["results"] if not r.get("in_trash")]
 
     options = []
     for database in databases[:MAX_OPTIONS]:
