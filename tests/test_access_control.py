@@ -6,138 +6,23 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from slack_bolt import BoltRequest
-from slack_bolt.authorization import AuthorizeResult
 
 from app.access_control import DENIED_MESSAGE, build_allowlist_middleware, parse_allowed_user_ids
-from app.notion_ops import NotionClients
-from main import build_app
+from tests.helpers import (
+    ALLOWED_USER,
+    DENIED_USER,
+    command,
+    dispatch,
+    home_button,
+    home_opened,
+    options,
+    property_options,
+    select_view_submission,
+    send_view_submission,
+    shortcut,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ALLOWED_USER = "UALLOWED1"
-DENIED_USER = "UDENIED01"
-
-
-def _authorize(**kwargs):
-    # No real token. The Slack client is mocked in every test that makes a call.
-    return AuthorizeResult(enterprise_id=None, team_id="T0000TEST", bot_token="test-token", bot_user_id="UBOT", bot_id="B1")
-
-
-@pytest.fixture
-def notion():
-    return mock.MagicMock()
-
-
-@pytest.fixture
-def app(notion):
-    # Use the production wiring from main.py. Only the Slack authorization is replaced.
-    # process_before_response=True runs listeners in the request thread, so the tests are deterministic.
-    return build_app(
-        frozenset({ALLOWED_USER}),
-        NotionClients(search=notion.search_client, default=notion.default_client),
-        signing_secret="test",
-        authorize=_authorize,
-        request_verification_enabled=False,
-        process_before_response=True,
-    )
-
-
-@pytest.fixture
-def slack_api():
-    with mock.patch("slack_sdk.WebClient.views_open") as views_open, mock.patch(
-        "slack_sdk.WebClient.views_publish"
-    ) as views_publish, mock.patch("slack_sdk.WebClient.views_update") as views_update:
-        yield {"views_open": views_open, "views_publish": views_publish, "views_update": views_update}
-
-
-def _team():
-    return {"id": "T0000TEST"}
-
-
-def command(user):
-    return {"command": "/send-to-notion", "user_id": user, "team_id": "T0000TEST", "trigger_id": "trigger"}
-
-
-def shortcut(user):
-    return {"type": "shortcut", "callback_id": "open-notion-form", "user": {"id": user}, "team": _team(), "trigger_id": "t"}
-
-
-def home_button(user):
-    return {
-        "type": "block_actions",
-        "user": {"id": user},
-        "team": _team(),
-        "trigger_id": "t",
-        "view": {"type": "home", "id": "VHOME"},
-        "actions": [{"action_id": "open-notion-form", "type": "button", "block_id": "b"}],
-    }
-
-
-def options(user):
-    return {
-        "type": "block_suggestion",
-        "action_id": "search-notion-database",
-        "block_id": "search-notion-database",
-        "user": {"id": user},
-        "team": _team(),
-        "value": "",
-    }
-
-
-def property_options(user, query=""):
-    return {
-        "type": "block_suggestion",
-        "action_id": "select",
-        "block_id": "status-id",
-        "user": {"id": user},
-        "team": _team(),
-        "value": query,
-        "view": {
-            "type": "modal",
-            "id": "V2",
-            "callback_id": "send-to-notion-database",
-            "private_metadata": json.dumps({"notion_data_source_id": "ds-1"}),
-        },
-    }
-
-
-def select_view_submission(user):
-    return {
-        "type": "view_submission",
-        "user": {"id": user},
-        "team": _team(),
-        "view": {
-            "type": "modal",
-            "id": "V1",
-            "callback_id": "select-notion-database",
-            "blocks": [{"type": "input", "block_id": "search-notion-database"}],
-            "state": {"values": {}},
-        },
-    }
-
-
-def send_view_submission(user):
-    return {
-        "type": "view_submission",
-        "user": {"id": user},
-        "team": _team(),
-        "view": {
-            "type": "modal",
-            "id": "V2",
-            "callback_id": "send-to-notion-database",
-            "private_metadata": json.dumps({"notion_data_source_id": "ds-1"}),
-            "blocks": [{"type": "section"}, {"type": "input", "block_id": "title"}],
-            "state": {"values": {"title": {"title": {"value": "Row"}}}},
-        },
-    }
-
-
-def home_opened(user):
-    return {"type": "event_callback", "team_id": "T0000TEST", "event": {"type": "app_home_opened", "user": user}}
-
-
-def dispatch(app, body):
-    return app.dispatch(BoltRequest(body=body, mode="socket_mode"))
 
 
 #
