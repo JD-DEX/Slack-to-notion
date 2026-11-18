@@ -5,22 +5,40 @@ import os
 from slack_bolt import App, Ack, Say, BoltContext
 from slack_sdk import WebClient
 
-from notion_client import Client
+from notion_client import APIResponseError
 
 from app.notion_ops import (
-    find_notion_database,
+    find_notion_data_source,
+    new_notion_client,
     build_notion_database_options,
     build_input_blocks,
     send_to_notion,
+    validate_submission,
 )
 
 
-def register_slack_event_handlers(app: App):
-    @app.middleware
-    def dump(body: dict, logger: logging.Logger, next_):
-        logger.debug(body)
-        next_()
+GENERIC_ERROR_TEXT = "Sorry, something went wrong. Please try again later or contact the app's administrator."
 
+
+def log_failure(logger: logging.Logger, message: str, e: Exception) -> None:
+    """Log a failure without user form values.
+
+    Notion validation messages can repeat the submitted values, so for Notion API
+    errors log only the HTTP status, error code and request ID.
+    """
+    if isinstance(e, APIResponseError):
+        logger.error(
+            "%s: Notion API error (status: %s, code: %s, request_id: %s)",
+            message,
+            getattr(e, "status", None),
+            getattr(e, "code", None),
+            getattr(e, "request_id", None),
+        )
+    else:
+        logger.exception(message)
+
+
+def register_slack_event_handlers(app: App):
     #
     # Home tab
     #
@@ -122,9 +140,13 @@ def register_slack_event_handlers(app: App):
         )
 
     @app.options("search-notion-database")
-    def search_notion_database(ack: Ack, payload: dict, context: BoltContext):
-        notion = Client(auth=resolve_notion_token(context))
-        options = build_notion_database_options(notion, payload)
+    def search_notion_database(ack: Ack, payload: dict, context: BoltContext, logger: logging.Logger):
+        try:
+            notion = new_notion_client(resolve_notion_token(context))
+            options = build_notion_database_options(notion, payload)
+        except Exception as e:
+            log_failure(logger, "Searching Notion databases failed", e)
+            options = []
         ack(options=options)
 
     def select_notion_database_ack(ack: Ack):
@@ -156,10 +178,10 @@ def register_slack_event_handlers(app: App):
     ):
         try:
             block_key = "search-notion-database"
-            database_id = view["state"]["values"][block_key][block_key]["selected_option"]["value"]
-            notion = Client(auth=resolve_notion_token(context))
-            database = find_notion_database(notion, database_id)
-            blocks = build_input_blocks(database)
+            data_source_id = view["state"]["values"][block_key][block_key]["selected_option"]["value"]
+            notion = new_notion_client(resolve_notion_token(context))
+            data_source = find_notion_data_source(notion, data_source_id)
+            blocks = build_input_blocks(data_source)
             client.views_update(
                 view_id=view["id"],
                 view={
@@ -168,12 +190,12 @@ def register_slack_event_handlers(app: App):
                     "title": {"type": "plain_text", "text": "Send to Notion"},
                     "submit": {"type": "plain_text", "text": "Submit"},
                     "close": {"type": "plain_text", "text": "Close"},
-                    "private_metadata": json.dumps({"notion_database_id": database_id}),
+                    "private_metadata": json.dumps({"notion_data_source_id": data_source_id}),
                     "blocks": blocks,
                 },
             )
         except Exception as e:
-            logger.exception(e)
+            log_failure(logger, "Loading the Notion database failed", e)
             client.views_update(
                 view_id=view["id"],
                 view={
@@ -186,8 +208,7 @@ def register_slack_event_handlers(app: App):
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": ":x: Loading Notion database data failed for some reason. "
-                                "Please contact this app's user support email address :bow:",
+                                "text": f":x: Loading the Notion database failed. {GENERIC_ERROR_TEXT}",
                             },
                         }
                     ],
@@ -195,8 +216,7 @@ def register_slack_event_handlers(app: App):
             )
             say(
                 channel=context.user_id,
-                text=f"I'm sorry for being distracted! This app encountered a problem (error: {e})\n"
-                "Please contact this app's user support email address :bow:",
+                text=f":x: Loading the Notion database failed. {GENERIC_ERROR_TEXT}",
             )
 
     app.view("select-notion-database")(
@@ -204,22 +224,8 @@ def register_slack_event_handlers(app: App):
         lazy=[select_notion_database_lazy],
     )
 
-    def _validate_send_to_notion_submission(state_values: dict) -> dict:
-        errors = {}
-        for block_id, action_id_to_value in state_values.items():
-            action_id = list(action_id_to_value.keys())[0]
-            value_obj = action_id_to_value[action_id]
-            str_value = value_obj.get("value")
-            if action_id == "number" and str_value is not None and not str_value.isnumeric():
-                errors[block_id] = "This property must be a number"
-            if action_id == "url" and str_value is not None and not str_value.startswith("http"):
-                errors[block_id] = "This property must be a URL"
-            if action_id == "email" and str_value is not None and "@" not in str_value:
-                errors[block_id] = "This property must be an email address"
-        return errors
-
     def sent_to_notion_ack(ack: Ack, view: dict):
-        errors = _validate_send_to_notion_submission(view["state"]["values"])
+        errors = validate_submission(view["state"]["values"])
         if len(errors) > 0:
             ack(response_action="errors", errors=errors)
             return
@@ -251,13 +257,13 @@ def register_slack_event_handlers(app: App):
         client: WebClient,
         logger: logging.Logger,
     ):
-        errors = _validate_send_to_notion_submission(view["state"]["values"])
+        errors = validate_submission(view["state"]["values"])
         if len(errors) > 0:
             return
         try:
-            database_id = json.loads(view["private_metadata"])["notion_database_id"]
-            notion = Client(auth=resolve_notion_token(context))
-            new_page = send_to_notion(notion, database_id, view["state"]["values"])
+            data_source_id = json.loads(view["private_metadata"])["notion_data_source_id"]
+            notion = new_notion_client(resolve_notion_token(context))
+            new_page = send_to_notion(notion, data_source_id, view["state"]["values"])
             page_url = new_page["url"]
             client.views_update(
                 view_id=view["id"],
@@ -278,7 +284,7 @@ def register_slack_event_handlers(app: App):
                 },
             )
         except Exception as e:
-            logger.exception(e)
+            log_failure(logger, "Saving the data to Notion failed", e)
             client.views_update(
                 view_id=view["id"],
                 view={
@@ -291,8 +297,7 @@ def register_slack_event_handlers(app: App):
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": ":x: Saving your data failed for some reason. "
-                                "Please contact this app's user support email address :bow:",
+                                "text": f":x: Saving your data failed. {GENERIC_ERROR_TEXT}",
                             },
                         }
                     ],
@@ -300,8 +305,7 @@ def register_slack_event_handlers(app: App):
             )
             say(
                 channel=context.user_id,
-                text=f"I'm sorry for being distracted! This app failed to send your data to Notion (error: {e})\n"
-                "Please contact this app's user support email address :bow:",
+                text=f":x: Saving your data to Notion failed. {GENERIC_ERROR_TEXT}",
             )
 
     app.view("send-to-notion-database")(
